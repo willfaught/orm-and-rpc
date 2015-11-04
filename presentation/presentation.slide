@@ -1,0 +1,1703 @@
+Ideas for better services
+1 September 2015
+
+Will Faught
+Software Engineer
+
+* Ideas for better services
+
+- Lots of ideas over time for improvements in various areas
+- Mainly about backend Go code
+
+* Outline
+
+- My history with a marketing service, marketing-service
+- Problems in marketing-service, but also general service aspects
+- Ideas for improving marketing-service (and all other services too)
+
+* Some code and other details are intentionally wrong
+
+Keeping it simple.
+
+##### My first big project
+
+* My first big project
+
+Background:
+
+- Needed to do marketing
+- marketing-service already existed
+
+Tasks:
+
+- Learn Go
+- Add offers to marketing-service
+
+* Created the offer files
+
+    ~/src/foo.com/marketing-service/
+        main.go
+        api/
+            service.go
+            routes.go
+            ...
+            offer.go
+            offer_test.go
+        models/
+            ...
+            offer.go
+            offer_test.go
+
+##### Offer model
+
+* Created the offer type
+
+`models.Offer`:
+
+    type Offer struct {
+    	ID string `key:"ID" cf:"offers" json:"id,omitempty"`
+    	Created int64 `name:"created" json:"created,omitempty"`
+    	Deleted int64 `name:"deleted" json:"deleted,omitempty"`
+    	Updated int64 `name:"updated" json:"updated,omitempty"`
+        ...
+    }
+
+* Created the offer methods
+
+`models.Offer` database:
+
+    func LoadOffer(c Cassandra, id string) (*Offer, bool, error) {...}
+
+    func (o *Offer) Store(c Cassandra) error {...}
+
+`models.Offer` lifecycle:
+
+    func CreateOffer(c Cassandra, o *Offer) (*Offer, error) {...}
+
+    func GetOffer(c Cassandra, id string) (*Offer, error) {...}
+
+    func (o *Offer) Update(c Cassandra) (*Offer, error) {...}
+
+`models.Offer` purpose:
+
+    func (o *Offer) Sign(c Cassandra) (*URL, error) {...}
+
+##### Offer service
+
+* Created the offer service methods
+
+`api.Service` type:
+
+    type Service struct {
+    	Accounting    accounting.Client
+    	AdminID       adminid.Client
+    	Comms         comms.Client
+    	Cassandra     Cassandra
+    	Cohorts       cohorts.Client
+    	ID            id.Client
+    	Optimove      optimove.Client
+    	URLShortener  urlshortener.Client
+    }
+
+* Created the offer service methods
+
+`api.Service` lifecycle:
+
+    func (s *Service) CreateOffer(u *URL, h Header, o *Offer) (int, Header, *Offer, error) {...}
+
+    func (s *Service) GetOffer(u *URL, h Header) (int, Header, *Offer, error) {...}
+
+    func (s *Service) UpdateOffer(u *URL, h Header, o *Offer) (int, Header, *Offer, error) {...}
+
+`api.Service` purpose:
+
+    func (s *Service) SignOffer(u *URL, h Header) (int, Header, *URL, error) {...}
+
+`api.Service` methods just wrap `models.Offer` methods.
+
+##### Offer routes
+
+* Created the offer service routes
+
+`api.Service` is passed to `api.Routes` to get an HTTP handler:
+
+    func Routes(s *Service) Handler {
+    	var handler = NewHandler()
+        
+    	handler.Handle("POST", "/offers", s.CreateOffer)
+    	handler.Handle("GET", "/offers/{id}", s.GetOffer)
+    	handler.Handle("PUT", "/offers/{id}", s.UpdateOffer)
+        handler.Handle("POST", "/offers/{id}/sign", s.SignOffer)
+        
+        return handler
+    }
+
+##### main.go
+
+* How it all works together
+
+`api.Service` is created and passed to `api.Routes` in `main`:
+
+    func main() {
+    	var service = api.NewService()
+        
+    	var handler = api.Routes(service)
+        
+    	NewServer().Start(":8220", handler)
+    }
+
+##### It gets messy
+
+* It gets messy
+
+* Need more dependencies
+
+Add more parameters!
+
+`models.Offer` lifecycle:
+
+    func CreateOffer(c Cassandra, a adminid.Client, i id.Client, o *Offer) (*Offer, error) {...}
+
+    func GetOffer(c Cassandra, a accounting.Client, id string) (*Offer, error) {...}
+
+    func (o *Offer) Update(c Cassandra, co comms.Client) (*Offer, error) {...}
+
+`models.Offer` purpose:
+
+    func (o *Offer) Sign(c Cassandra, i id.Client, u urlshortener.Client) (*URL, error) {...}
+
+Can't remember how to call them. Yuck.
+
+Want to pass everything in one "context" parameter.
+
+* Easy solution
+
+Why not reuse `api.Service`? That's where everything is anyway!
+
+`models.Offer` lifecycle:
+
+    func CreateOffer(s *api.Service, o *Offer) (*Offer, error) {...}
+
+    func GetOffer(s *api.Service, id string) (*Offer, error) {...}
+
+    func (o *Offer) Update(s *api.Service) (*Offer, error) {...}
+
+`models.Offer` purpose:
+
+    func (o *Offer) Sign(s *api.Service) (*URL, error) {...}
+
+Simple and easy to remember.
+
+* Wrong solution
+
+But:
+
+- Go doesn't allow circular package dependencies
+- `api` already depends on `models`
+
+So `models` can't depend on `api`.
+
+So `models.Offer` can't use `api.Service`.
+
+* The real world kicks in
+
+- I'm still learning
+- I don't want to rock the boat by doing a big redesign
+- The team is moving fast
+- I need to ship something
+
+What to do?
+
+* The expedient thing
+
+Moved `models.Offer` code needing `api.Service` to `api.Service`.
+
+Moved `models.Offer` lifecycle code:
+
+    func CreateOffer(c Cassandra, a adminid.Client, i id.Client, o *Offer) (*Offer, error) {...}
+
+    func GetOffer(c Cassandra, a accounting.Client, id string) (*Offer, error) {...}
+
+    func (o *Offer) Update(c Cassandra, co comms.Client) (*Offer, error) {...}
+
+to `api.Service` lifecycle code:
+
+    func (s *Service) CreateOffer(u *URL, h Header, o *Offer) (int, Header, *Offer, error) {...}
+
+    func (s *Service) GetOffer(u *URL, h Header) (int, Header, *Offer, error) {...}
+
+    func (s *Service) UpdateOffer(u *URL, h Header, o *Offer) (int, Header, *Offer, error) {...}
+
+* The expedient thing
+
+Moved `models.Offer` purpose code:
+
+    func (o *Offer) Sign(c Cassandra, i id.Client, u urlshortener.Client) (*URL, error) {...}
+
+to `api.Service` purpose code:
+
+    func (s *Service) SignOffer(u *URL, h Header) (int, Header, *URL, error) {...}
+
+Kept only `models.Offer` database code:
+
+    func LoadOffer(c Cassandra, id string) (*Offer, bool, error) {...}
+
+    func (o *Offer) Store(c Cassandra) error {...}
+
+80% of the code now lives in `api`.
+
+##### Not alone
+
+* Others seem to have reached the same conclusion
+
+Basic design:
+
+- `models`: database loading and storing, validation, miscellaneous
+- `api`: everything else
+
+##### It's getting crowded
+
+* It's getting crowded
+
+Just `models` and `api` namespaces.
+
+Name prefixes and suffixes abound to disentangle it all.
+
+- `models`:
+
+    const (
+    	OfferAbsolute = "absolute"
+    	OfferCurrency = "GBP"
+    	OfferEconomy  = "real"
+    	OfferRelative = "relative"
+    )
+
+- `api`:
+
+    func (s *Service) CreateCampaign(u *URL, h Header, c Campaign) (int, Header, *Campaign, error)
+    func (s *Service) CreateOffer(u *URL, h Header, o *Offer) (int, Header, *Offer, error)
+    func (s *Service) CreatePromotion(u *URL, h Header, p *Promotion) (int, Header, *Promotion, error)
+    func (s *Service) CreateTemplate(u *URL, h Header, t *Template) (int, Header, *Template, error)
+
+* It's getting crowded
+
+The `api.Service` interface goes on...
+
+.code service.go /^interface/,/slide break 1/
+
+* It's getting crowded
+
+\...and on...
+
+.code service.go /slide break 1/,/slide break 2/
+
+* It's getting crowded
+
+\...and on.
+
+.code service.go /slide break 2/,/^}/
+
+- 56 methods
+- 22 custom types
+
+* It's getting crowded
+
+5 `models` files:
+
+    brand.go   campaign.go   offer.go   organization.go   offer.go
+
+27 `api` files:
+
+    account_credit_ledgers.go   netent.go              push_notification.go
+    brand.go                    offer.go               push_notification_test.go
+    campaign.go                 offer_test.go          routes.go
+    campaign_test.go            optimove.go            segment.go
+    service.go                  optimove_test.go       segment_test.go
+    context_test.go             organization.go        shared_utilities.go
+    error.go                    organization_test.go   shared_utilities_test.go
+    health.go                   offer.go               template.go
+    identity.go                 offer_test.go          template_test.go
+
+##### A certain quotation comes to mind
+
+* A certain quotation comes to mind
+
+.image shit.gif
+
+##### Ideas for improvement
+
+* Ideas for improvement
+
+##### Value types
+
+* Value types
+
+* Use value types instead of pointer types where possible
+
+We use a lot of unnecessary pointer types.
+
+Value types:
+
+- Shorter and simpler
+- Thread-safe
+- Cause less potential GC load
+- Most flexible method receivers
+
+Pointer types:
+
+- Signal intent to mutatate
+- Signal intent to share instead of give
+
+* Use value types instead of pointer types where possible
+
+Anything could happen:
+
+    func (o *Offer) Update(c *Cassandra) (*Offer, error) {...}
+
+vs.
+
+Fewer things can happen:
+
+    func (o Offer) Update(c Cassandra) (Offer, error) {...}
+
+No more unnecessary pointers in these slides. You're welcome.
+
+##### Defaults
+
+* Defaults
+
+* Use defaults where possible
+
+- Simpler
+- Clearer
+- Consistent
+- Free
+
+* Example of no defaults
+
+    type Offer struct {
+    	ID string `key:"ID" cf:"offers" json:"id,omitempty"`
+    	Created int64 `name:"created" json:"created,omitempty"`
+    	Deleted int64 `name:"deleted" json:"deleted,omitempty"`
+    	Updated int64 `name:"updated" json:"updated,omitempty"`
+    }
+
+- `Offer` vs. `offers`
+- `ID` vs. `id`, etc.
+- JSON `omitempty` tags
+
+Empty example:
+
+    {}
+
+Full example:
+
+    {"id": "foo", "created": 123, "deleted": 456, "updated": 789}
+
+* Example of all defaults
+
+    type Offer struct {
+    	ID string `key:"ID" cf:"Offer"`
+    	Created int64
+    	Deleted int64
+    	Updated int64
+    }
+
+- `Offer` everywhere
+- `ID` everywhere, etc.
+- No JSON `omitempty` tags
+
+Empty example:
+
+    {"ID": "", "Created": 0, "Deleted": 0, "Updated": 0}
+
+Full example:
+
+    {"ID": "foo", "Created": 123, "Deleted": 456, "Updated": 789}
+
+* Comparing the code
+
+No defaults:
+
+    type Offer struct {
+    	ID string `key:"ID" cf:"offers" json:"id,omitempty"`
+    	Created int64 `name:"created" json:"created,omitempty"`
+    	Deleted int64 `name:"deleted" json:"deleted,omitempty"`
+    	Updated int64 `name:"updated" json:"updated,omitempty"`
+    }
+
+All defaults:
+
+    type Offer struct {
+    	ID string `key:"ID" cf:"Offer"`
+    	Created int64
+    	Deleted int64
+    	Updated int64
+    }
+
+The code with all defaults is much easier to read.
+
+* Comparing the full examples
+
+No defaults:
+
+    {"id": "foo", "created": 123, "deleted": 456, "updated": 789}
+
+All defaults:
+
+    {"ID": "foo", "Created": 123, "Deleted": 456, "Updated": 789}
+
+- The JSON is basically the same
+- Upper case vs. lower case JSON names isn't important
+
+* Comparing the empty examples
+
+No defaults:
+
+    {}
+
+- Compact
+- JavaScript sometimes needs to know the default values for empty attributes
+
+All defaults:
+
+    {"ID": "", "Created": 0, "Deleted": 0, "Updated": 0}
+
+- Not compact
+- JavaScript doesn't need to know the default values for empty attributes
+
+* The bottom line
+
+All defaults:
+
+- Go code is simpler
+- JavaScript code is simpler
+- Slower to encode/decode
+
+No defaults:
+
+- (The opposite)
+
+Basically, which is more valuable for us: programmer time or program speed?
+
+(Also, [[http://c2.com/cgi/wiki?PrematureOptimization][premature optimization]], etc.)
+
+##### Panics
+
+* Panics
+
+* Panic for unrecoverable errors
+
+- Responding 500 manually requires returning errors back down the call stack
+- Errors bloat function declarations, calls, and returns
+- Our server framework turns panics into 500 responses
+- Just panic for *unrecoverable* errors to simplify code
+
+No panic:
+
+    func (o Offer) Store(c Cassandra) error {...}
+    
+    if err := myoffer.Store(c); err != nil {
+        return err
+    }
+
+Panic:
+
+    func (o Offer) Store(c Cassandra) {...}
+    
+    myoffer.Store(c)
+
+##### Model packages
+
+* Model packages
+
+* Separate package per model
+
+- Encapsulation
+- Smaller components
+- Fewer name conflicts
+- Reads better: `offer.Currency` vs. `models.OfferCurrency`
+
+Move `models.Offer` into package `offer`.
+
+* Old files
+
+    ~/src/foo.com/marketing-service/
+        main.go
+        api/
+            service.go
+            routes.go
+            offer.go
+            offer_test.go
+        models/
+            offer.go
+            offer_test.go
+
+* New files
+
+    ~/src/foo.com/marketing-service/
+        main.go
+        api/
+            service.go
+            routes.go
+            offer.go
+            offer_test.go
+        offer/
+            offer.go
+            offer_test.go
+
+* Old names
+
+`models`:
+
+    const (
+    	OfferAbsolute = "absolute"
+    	OfferCurrency = "GBP"
+    	OfferEconomy  = "real"
+    	OfferRelative = "relative"
+    )
+
+    func LoadOffer(c Cassandra, id string) (Offer, bool, error) {...}
+
+* New names
+
+`offer`:
+
+    const (
+    	Absolute = "absolute"
+    	Currency = "GBP"
+    	Economy  = "real"
+    	Relative = "relative"
+    )
+
+    func Load(c Cassandra, id string) (Offer, error) {...}
+
+##### Repositories
+
+* Repositories
+
+* Abstract the storage and retrieval implementation details
+
+- [[https://blog.8thlight.com/uncle-bob/2012/08/13/the-clean-architecture.html][Database details can change without affecting models]]
+
+* Create an offer repository
+
+    type Repository interface {
+    	Load(id string) (Offer, bool)
+    	LoadAll() []Offer
+    	LoadRange(id string, limit int) ([]Offer, bool)
+    	Store(o Offer)
+    }
+
+* Remove the database details from offer.Offer
+
+    type Offer struct {
+    	ID string
+    	Created int64
+    	Deleted int64
+    	Updated int64
+    }
+
+* Generate a private type with the database details
+
+`offer.offer`:
+
+    type offer struct {
+    	ID string `key:"ID" cf:"Offer"`
+    	Created int64
+    	Deleted int64
+    	Updated int64
+    }
+
+* Generate code to copy between them
+
+    func (o *offer) copyFrom(from Offer) {
+    	o.ID = from.ID
+        o.Created = from.Created
+        o.Deleted = from.Deleted
+        o.Updated = from.Updated
+    }
+
+    func (o offer) copyTo(to *Offer) {
+    	to.ID = o.ID
+        to.Created = o.Created
+        to.Deleted = o.Deleted
+        to.Updated = o.Updated
+    }
+
+`offer.Repository` does the copying:
+
+- Copies from `offer.offer` to `offer.Offer` when loading
+- Copies from `offer.Offer` to `offer.offer` when storing
+
+* Examples
+
+    func (r Repository) Load(id string) (Offer, bool) {
+    	var from offer
+        
+    	// Load using from...
+        
+    	var to Offer
+    	
+        from.copyTo(&to)
+    	
+        return to, true
+    }
+
+    func (r Repository) Store(o Offer) {
+        var to offer
+        
+    	to.copyFrom(o)
+        
+    	// Store using to...
+    }
+
+##### Rich types
+
+* Rich types
+
+* Support rich types for model fields
+
+- Simpler
+- Easier
+- Safer
+- Clearer
+- Idiomatic
+
+Example:
+
+    type Offer struct {
+        ID UUID
+        Created Time
+        Deleted Time
+        Updated Time
+    }
+
+* Convert between model and database types
+
+Do it automatically in `Repository` load and store methods.
+
+* copyFrom
+
+    func (to *offer) copyFrom(from Offer) error {
+    	if from.Created.IsZero() {
+    		to.Created = 0
+    	} else {
+    		to.Created = from.Created.UnixNano()
+    	}
+    	...
+        to.ID = from.ID.String()
+    	...
+    }
+
+* copyTo
+
+    func (from offer) copyTo(to *Offer) error {
+    	if o.Created == 0 {
+    		to.Created = Time{}
+    	} else {
+    		to.Created = time.Unix(0, from.Created).UTC()
+    	}
+    	...
+        var err error
+        to.ID, err = ParseUUID(from.ID)
+        if err != nil {
+            return err
+        }
+    	...
+    }
+
+* Code generation
+
+Conversion code can be generated.
+
+##### Model versions
+
+* Model versions
+
+* Make schema migrations easy
+
+- Can be complex
+- Can be error-prone
+- Can lose or corrupt data
+
+* Goals
+
+- Be safe: don't change or delete data, be able to roll back
+- Be resilient: don't require downtime or allow bad states, enable rolling deployments
+- Be transparent: models only need to know about the latest version
+
+* Strategy
+
+- Store versions in different column families
+
+    marketing_service.offer
+    marketing_service.offer2
+
+- Versions are convertible backward and forward
+
+    v1 -> v2
+    v1 <- v2
+
+- Convert old versions to new versions when loading
+
+    v1 -> v2
+
+- Convert new versions to old versions when storing
+
+    v1 <- v2
+
+- Convert remaining old versions to new versions in bulk some time later
+
+* Load a new version
+
+- Try to load the old version
+- If you can't, then it's not found
+- If you can, then try to load the new version
+- If you can't, then convert the old version to the new version and return that
+- If you can, then use it to convert the old version to the new version and return that
+
+* Store a new version
+
+- Store the new version
+- Try to load the old version
+- If you can't, then convert the new version to the old version and store that
+- If you can, then use it to convert the new version to the old version and store that
+
+* Load all the new versions
+
+- Load all the old versions
+- Load the new version of each old version
+
+* Clean up
+
+Drop the old version column family after bulk conversion.
+
+* Multiple old versions
+
+Old and new are relative.
+
+Recurse for a chain of 3 or more versions:
+
+    v1 -> v2 -> v3 -> v4 -> v5
+    v1 <- v2 <- v3 <- v4 <- v5
+
+* Properties
+
+Safety:
+
+- Old and new versions are separate
+- Old and new versions are synchronized
+- Old versions remain valid
+
+Resilience:
+
+- Services don't have to be stopped
+- Old and new code can run in tandem
+- Performance degrades linearly with the version count
+- Bulk conversion can be deferred
+
+Transparency:
+
+- Load and store new versions only
+
+* Code generation
+
+Version code and tailored bulk conversion scripts can be generated.
+
+##### Service packages
+
+* Service packages
+
+* Separate service package per model
+
+- Encapsulation
+- Smaller components
+- Fewer name conflicts
+- Reads better: `offers.Create` vs. `api.CreateOffer`
+
+* Old files
+
+    ~/src/foo.com/marketing-service/
+        main.go
+        api/
+            service.go
+            routes.go
+            offer.go
+            offer_test.go
+        offer/
+            offer.go
+            offer_test.go
+
+* Move api.Service methods for offer.Offer to offers.Service
+
+    ~/src/foo.com/marketing-service/
+        main.go
+        api/
+            service.go
+            routes.go
+        offer/
+            offer.go
+            offer_test.go
+        offers/
+            offers.go
+            offers_test.go
+
+* Delete empty api/service.go
+
+    ~/src/foo.com/marketing-service/
+        main.go
+        api/
+            routes.go
+        offer/
+            offer.go
+            offer_test.go
+        offers/
+            offers.go
+            offers_test.go
+
+* Rename api/routes.go to api/marketing.go
+
+    ~/src/foo.com/marketing-service/
+        main.go
+        api/
+            marketing.go
+        offer/
+            offer.go
+            offer_test.go
+        offers/
+            offers.go
+            offers_test.go
+
+* Rename api to marketing
+
+    ~/src/foo.com/marketing-service/
+        main.go
+        marketing/
+            marketing.go
+            marketing_test.go
+        offer/
+            offer.go
+            offer_test.go
+        offers/
+            offers.go
+            offers_test.go
+
+* offers.Service is the same deal as api.Service
+
+`offers.Service` type:
+
+    type Service struct {
+    	Accounting    accounting.Client
+    	AdminID       adminid.Client
+    	Comms         comms.Client
+    	Cassandra     Cassandra
+    	ID            id.Client
+    	URLShortener  urlshortener.Client
+    }
+
+`offers.Service` lifecycle:
+
+    func (s Service) Create(u URL, h Header, o Offer) (int, Header, Offer, error) {...}
+
+    func (s Service) Get(u URL, h Header) (int, Header, Offer, error) {...}
+
+    func (s Service) Update(u URL, h Header, o Offer) (int, Header, Offer, error) {...}
+
+`offers.Service` purpose:
+
+    func (s Service) Sign(u URL, h Header) (int, Header, URL, error) {...}
+
+* Move marketing.Routes code for offers to offers.Handler
+
+New `offers.Handler`:
+
+    func Handler(s Service) Handler {
+    	var handler = NewHandler()
+        
+    	handler.Handle("POST", "/", s.Create)
+    	handler.Handle("GET", "/{id}", s.Get)
+    	handler.Handle("PUT", "/{id}", s.Update)
+        handler.Handle("PUT", "/{id}/sign", s.Sign)
+        
+        return handler
+    }
+
+* Rename marketing.Routes to marketing.Handler
+
+Change `marketing.Handler` to aggregate services into one handler:
+
+    func Handler() Handler {
+    	var offersService = offers.Service{...}
+
+        var offersHandler = offers.Handler(offersService)
+
+        var marketingHandler = NewHandler()
+    	
+    	marketingHandler.HandleNamespace("/offers/", offersHandler)
+        
+        return marketingHandler
+    }
+
+`marketing.Handler` is now responsible for:
+
+- Making all the services
+- Making all the handlers for the services
+- Making the handler that aggregates all the other handlers
+- Serving that one handler
+
+* main.go
+
+Change `main` to simply serve the `marketing` handler:
+
+    func main() {
+    	NewServer().Start(":8220", marketing.Handler())
+    }
+
+##### Service interfaces
+
+* Service interfaces
+
+* The client interface
+
+Remember the big pile from earlier? The old `api.Service` interface:
+
+    interface {
+    	CreateOffer(u *URL, h Header, o *Offer) (int, Header, *Offer, error)
+        ... x 55
+    }
+
+This is the equivalent Go client interface:
+
+    type Marketing interface {
+    	CreateOffer(o Offer) (Offer, error)
+        ...
+    }
+
+(Dropped the URL and Header parameters, and the int and Header results.)
+
+* Client implementation
+
+    type MarketingClient struct {
+    	httpme.Client
+    }
+
+    func (m MarketingClient) CreateOffer(o Offer) (Offer, error) {
+        return o, m.Client.PostJSON("/offers", o, &o)
+    }
+    
+    ...
+    
+    func NewMarketingClient(...) Marketing {
+        return MarketingClient{...}
+    }
+
+* I've made many clients for many services
+
+Each client has a mock and a fake.
+
+* Fake clients
+
+[[http://martinfowler.com/articles/mocksArentStubs.html][Definitions]]:
+
+- "Mocks are [...] objects pre-programmed with expectations which form a specification of the calls they are expected to receive."
+- "Fake objects actually have working implementations, but usually take some shortcut which makes them not suitable for production (an in memory database is a good example)."
+
+Request calls can touch many clients, and none might be the focus of testing.
+
+It's a lot of work to mock all those client calls that you don't care about.
+
+Fake clients make the service work as if it's using real clients.
+
+* Fake client implementation
+
+    type FakeMarketingClient struct {
+        Offers map[string]Offer
+    }
+
+    func (f FakeMarketingClient) CreateOffer(o Offer) (Offer, error) {
+        f.Offers[o.ID] = o
+        return o, nil
+    }
+    
+    ...
+    
+    func NewFakeMarketingClient(...) Marketing {
+        return FakeMarketingClient{...}
+    }
+
+* Making fake clients is tedious and error-prone
+
+Want fake clients to work just like real ones (error checking, etc.)
+
+Can't reuse services to implement fake clients because they're tied to HTTP.
+
+Can we factor HTTP out of services?
+
+* offers, not api
+
+Keep in mind that we're dealing with `offers` now, not `api`.
+
+The interface for `offers.Service` is:
+
+    interface {
+        Create(u URL, h Header, o Offer) (int, Header, Offer, error)
+        Get(u URL, h Header) (int, Header, Offer, error)
+        Update(u URL, h Header, o Offer) (int, Header, Offer, error)
+        Sign(u URL, h Header) (int, Header, URL, error)
+    }
+
+The client interface for `offers.Service` would be:
+
+    type Interface interface {
+        Create(o Offer) (Offer, error)
+        Get(id string) (Offer, error)
+        Update(o Offer) (Offer, error)
+        Sign(id string) (URL, error)
+    }
+
+Let's call that `offers.Interface`.
+
+* Change service interfaces to match client interfaces
+
+Old `offers.Service` methods:
+
+    func (s Service) Create(u URL, h Header, o Offer) (int, Header, Offer, error) {...}
+    
+    ...
+    
+New `offers.Service` methods:
+
+    func (s Service) Create(o Offer) (Offer, error) {...}
+    
+    ...
+
+Now `offers.Service` doesn't know about HTTP and isn't a server.
+
+Now `offers.Service` matches `offers.Interface`.
+
+* Servers wrap services
+
+New `offers.Server`:
+
+    type Server {
+        Service Service
+    }
+    
+    func (s Server) Create(u URL, h Header, o Offer) (int, Header, Offer, error) {
+        var created, err = s.Service.Create(o)
+        
+        if err != nil {
+            return http.StatusBadRequest, nil, Offer{}, err
+        }
+        
+        return http.StatusOK, nil, created, nil
+    }
+    
+    ...
+
+* Handler functions take servers instead of services
+
+`offers.Handler`:
+
+    func Handler(s Server) Handler {
+    	var handler = NewHandler()
+        
+    	handler.Handle("POST", "/", s.Create)
+    	handler.Handle("GET", "/{id}", s.Get)
+    	handler.Handle("PUT", "/{id}", s.Update)
+        handler.Handle("PUT", "/{id}/sign", s.Sign)
+        
+        return handler
+    }
+
+* Free fake clients using services
+
+`offers.Client`:
+
+    type Client struct {
+    	httpme.Client
+    }
+    
+    func (c Client) Create(o Offer) (Offer, error) {
+        return o, c.Client.PostJSON("/", o, &o)
+    }
+    
+    ...
+    
+    func NewClient(...) Interface {
+        return Client{...}
+    }
+    
+    func NewFakeClient(...) Interface {
+        return Service{...}
+    }
+
+* Added benefits
+
+Observation: `Interface` can be either a fake client or a real one.
+
+A fake client is a service that runs in-memory.
+
+A real client proxies a remote service.
+
+`Interface` is just an interface. It doesn't matter which one it is.
+
+`Interface` can be a real client that proxies a fake client.
+
+`Interface` can be a chain of real clients that proxy a fake client.
+
+Tests written against `Interface` can be run twice:
+
+- Against a fake client (in-memory) as unit tests
+- Against a real client (remote) as integration tests
+
+(Perhaps this even obviates integration tests, as testing against a real client only tests the transport wrapper, which can be generated and guaranteed to be correct.)
+
+* Use service interfaces everywhere for maximum flexibility
+
+Replace `Service` with `Interface` in `offers.Server`:
+
+    type Server {
+        Interface Interface
+    }
+
+* Example: proxying we already do, made simpler
+
+We have (new) package cohorts-service/segments.
+
+We want to proxy requests for segments from marketing-service to cohorts-service.
+
+Change `marketing.Handler` to add a remote `segments` service:
+
+    func Handler() Handler {
+        var offersInterface = offers.Service{...}
+        
+    	var offersHandler = offers.Handler(offers.Server{offersInterface})
+        
+        var segmentsInterface = segments.NewClient(...)
+        
+        var segmentsHandler = segments.Handler(segments.Server{segmentsInterface})
+
+        var marketingHandler = NewHandler()
+    	
+    	marketingHandler.HandleNamespace("/offers/", offersHandler)
+        marketingHandler.HandleNamespace("/segments/", segmentsHandler)
+        
+        return marketingHandler
+    }
+
+##### Model methods
+
+* Model methods
+
+* Want to use some service methods like model methods
+
+Can do:
+
+    var myoffer = myoffers.Create(...)
+    
+    ...
+    
+    myoffers.Update(myoffer)
+
+Can't do:
+
+    var myoffer = myoffers.Create(...)
+    
+    ...
+    
+    myoffer.Update()
+
+The latter is idiomatic Go and hides the service dependency.
+
+* Problems with model methods
+
+    var myoffer = myoffers.Create(...)
+    
+    ...
+    
+    myoffer.Update()
+
+- `Update` is declared on `offers.Interface`, not `offer.Offer`
+- `myoffer` has to use `myoffers`, not another `offers.Offers` instance
+- But `myoffer` can't use `myoffers` because of circular package dependencies
+
+So how can `offer.Offer` use an `offers.Interface` without referring to `offers`?
+
+* Make a model interface
+
+New `offer.Interface`:
+
+    type Interface interface {
+        Update() (Offer, error)
+        Sign() (URL, error)
+    }
+
+Only the service methods that make sense as model methods.
+
+Add it to `offer.Offer`:
+
+    type Offer struct {
+        Interface Interface
+        ID UUID
+        Created Time
+        Deleted Time
+        Updated Time
+    }
+
+`offers.Interface` is assignable to `offer.Interface`.
+
+* Services fill in the interface field before returning instances
+
+`offers.Service.Create`:
+
+    func (s Service) Update(o Offer) (Offer, error) {
+        ... o.Interface = s ...
+        ... return o, nil ...
+    }
+
+Instances can now reach the service they came from.
+
+* Model methods call their counterpart service methods
+
+New `offer.Offer.Update`:
+
+    func (o Offer) Update() (Offer, error) {
+        return o.Interface.Update(o)
+    }
+
+* Code generation
+
+Model method and interface code can be generated.
+
+##### Part 2
+
+* Part 2
+
+##### Review of Part 1
+
+* Review of Part 1
+
+* Goals
+
+Make development of internal services:
+
+- Simpler
+- Faster
+- Safer
+
+* Ideas for doing that
+
+- Value types
+- Default Cassandra and JSON names
+- Panic for 500
+- Model packages
+- Model repositories
+- Model type conversions
+- Model versions
+- Model methods
+- Service packages
+- Service interfaces
+
+##### What we write
+
+* What we write
+
+* Our files
+
+    ~/src/foo.com/marketing-service/
+        main.go
+        marketing/
+            marketing.go
+            marketing_test.go
+        offer/
+            offer.go
+            offer_test.go
+        offers/
+            offers.go
+            offers_test.go
+
+* Our model
+
+`offer.Offer`:
+
+    type Offer struct {
+        Interface Interface
+        ID UUID
+        Created Time
+        Deleted Time
+        Updated Time
+    }
+
+* Our model's interface
+
+`offer.Interface`:
+
+    type Interface interface {
+        Update() (Offer, error)
+        Sign() (URL, error)
+    }
+
+* Our service
+
+`offers.Service`:
+
+    type Service struct {
+    	Accounting    accounting.Client
+    	AdminID       adminid.Client
+    	Comms         comms.Client
+    	Cassandra     Cassandra
+    	ID            id.Client
+    	URLShortener  urlshortener.Client
+    }
+
+    func (s Service) Create(o Offer) (Offer, error) {...}
+    
+    func (s Service) Get(id string) (Offer, error) {...}
+    
+    func (s Service) Update(o Offer) (Offer, error) {...}
+    
+    func (s Service) Sign(id string) (URL, error) {...}
+
+* Our service initializer and aggregator
+
+`marketing.Handler`:
+
+    func Handler() Handler {
+        var offersService = offers.Service{...}
+        
+        var offersServer = offers.Server{offersService}
+        
+    	var offersHandler = offers.Handler(offersServer)
+        
+        var rootHandler = NewHandler()
+    	
+    	rootHandler.HandleNamespace("/offers/", offersHandler)
+        
+        return rootHandler
+    }
+
+* Our server
+
+`main`:
+
+    func main() {
+    	NewServer().Start(":8220", marketing.Handler())
+    }
+
+##### What gets generated
+
+* What gets generated
+
+* Model methods
+
+`Offer.Update`:
+
+    func (o Offer) Update() (Offer, error) {
+        return o.Interface.Update(o)
+    }
+
+`Offer.Sign`:
+    
+    func (o Offer) Sign() (URL, error) {
+        return o.Interface.Sign()
+    }
+
+* Database type
+
+`offer.offer`:
+
+    type offer struct {
+    	ID string `key:"ID" cf:"Offer"`
+    	Created int64
+    	Deleted int64
+    	Updated int64
+    }
+
+* Conversion to the database type
+
+`offer.offer.convertFrom`:
+
+    func (o *offer) convertFrom(from Offer) {
+    	if from.Created.IsZero() {
+    		o.Created = 0
+    	} else {
+    		o.Created = from.Created.UnixNano()
+    	}
+    	...
+    	o.ID = from.ID.String()
+    	o.Name = from.Name
+        ...
+    }
+
+* Conversion from the database type
+
+`offer.offer.convertTo`:
+
+    func (o offer) convertTo(to *Offer) {
+    	if o.Created == 0 {
+    		to.Created = time.Time{}
+    	} else {
+    		to.Created = time.Unix(0, o.Created).UTC()
+    	}
+    	...
+        var err error
+    	if to.ID, err = ParseUUID(o.ID); err != nil {
+            panic(err)
+        }
+    	to.Name = o.Name
+    	...
+    }
+
+* Repository
+
+`offer.Repository`:
+
+    type Repository interface {
+    	Load(id string) (Offer, bool)
+    	LoadAll() []Offer
+    	LoadRange(id string, limit int) ([]Offer, bool)
+    	Store(o Offer)
+    }
+
+* Repository implementation
+
+`offer.repository`:
+
+    type repository struct {
+    	connection gossie.ConnectionPool
+    	mapping    gossie.Mapping
+    }
+
+* Repository loading
+
+`offer.repository.Load`:
+
+    func (r repository) Load(id string) (Offer, bool) {
+    	var from offer
+    	if err := r.connection.Query(r.mapping).GetOne(id, &from); err != nil {
+    		if err != gossie.Done {
+    			panic(err)
+    		}
+    		return Offer{}, false
+    	}
+        var to Offer
+        from.convertTo(&to)
+    	return to, true
+    }
+
+* Repository storing
+
+`offer.repository.Store`:
+
+    func (r repository) Store(o Offer) {
+        var to offer
+        to.convertFrom(o)
+    	if err := r.connection.Batch().Insert(r.mapping, &to).Run(); err != nil {
+    		panic(err)
+    	}
+    }
+
+* Service interface
+
+`offers.Interface`:
+
+    type Interface interface {
+        Create(o Offer) (Offer, error)
+        Get(id string) (Offer, error)
+        Update(o Offer) (Offer, error)
+        Sign(id string) (URL, error)
+    }
+
+* Service server
+
+`offers.Server`:
+
+    type Server {
+        Interface Interface
+    }
+    
+    func (s Server) Create(u URL, h Header, o Offer) (int, Header, Offer, error) {...}
+    
+    func (s Server) Get(u URL, h Header) (int, Header, Offer, error) {...}
+    
+    func (s Server) Update(u URL, h Header, o Offer) (int, Header, Offer, error) {...}
+    
+    func (s Server) Sign(u URL, h Header) (int, Header, URL, error) {...}
+
+* Server handler
+
+`offers.Handler`:
+
+    func Handler(s Server) Handler {
+    	var handler = NewHandler()
+        
+    	handler.Handle("POST", "/", s.Create)
+    	handler.Handle("GET", "/{id}", s.Get)
+    	handler.Handle("PUT", "/{id}", s.Update)
+        handler.Handle("PUT", "/{id}/sign", s.Sign)
+        
+        return handler
+    }
+
+* What it gets you
+
+Simpler value types, naming, and error handling:
+
+- Cleaner, smaller code
+
+Model and service packages:
+
+- Smaller, decoupled components
+
+Service interfaces:
+
+- Abstracted implementations
+
+Code generation:
+
+- Do more with less
+
+##### End of review
+
+* End of review
+
+##### Service RPC
+
+* Service RPC
+
+* We basically use JSON over HTTP for RPC
+
+This:
+
+    func Handler(s Server) Handler {
+    	var handler = NewHandler()
+        
+    	handler.Handle("POST", "/", s.Create)
+    	handler.Handle("GET", "/{id}", s.Get)
+    	handler.Handle("PUT", "/{id}", s.Update)
+        handler.Handle("PUT", "/{id}/sign", s.Sign)
+        
+        return handler
+    }
+
+is equivalent to this:
+
+    type Interface interface {
+        Create(o Offer) (Offer, error)
+        Get(id string) (Offer, error)
+        Update(o Offer) (Offer, error)
+        Sign(id string) (URL, error)
+    }
+
+* HTTP sucks for internal transport
+
+- Complex, vague, unsuitable document storage and retrieval semantics
+
+Slack #eng debate about what 404 means:
+
+    404 means not found, as in the game was not found. How is that not explicit ?
+    sometimes 404 means you don’t have permission as well (e.g. github, etc)
+    404 should never mean you don't have permission. That is 401
+    not necessarily
+    trying to open something in github when you are not logged in results in a 404 (at least that’s what they show you)
+    otherwise people would be able to probe github repos by tacitly confirming the existence of code paths
+    404 implicitly means “we couldn’t find it *for you*"
+    Externally it sends the user a 404, but internally I'm sure it is different
+    Personally I think it makes sense internally to consider 404 to mean that the resource was not found.
+
+- Curl commands are a pain in the ass
+
+    curl -s -u "$SHARED_USERNAME:$SHARED_PASSWORD" -H 'content-type: application/json' -X PUT \
+    -d '{...}' 'https://foo.com/offers/rsi'
+
+* I don't care
+
+I don't care about idempotency, methods, paths, bodies, queries, status codes, etc.
+
+All I want to do (as an internal Go service) is call remote procedures:
+
+- There's a procedure over there, in that remote place
+- Here are the arguments
+- I'll wait for the result
+
+Just _do_ it.
+
+* JSON sucks for internal transport
+
+- Slower than binary transports
+- No nice features like backward compatibility, extensions, validation, etc.
+- Often written by hand (curl): error-prone
+- Often written on one line (curl): difficult to read and write
+
+Just good for talking to web pages and external services. ([[https://www.hakkalabs.co/articles/distributed-systems-go-good-bad-otherwise][Ask Google.]])
+
+* We can have many options
+
+`offers.Service` wrapped in the JSON-over-HTTP transport in `marketing.Handler`:
+
+    var offersService = offers.Service{...}
+    
+    var offersServer = offers.Server{offersService}
+    
+    var offersHandler = offers.Handler(offersServer)
+        
+We can wrap `offersService` with other transports too:
+
+    var offersProtocolBufferServer = protobuf.NewServer(offersService)
+
+One service instance can serve calls/requests via many transports simultaneously.
+
+Transports are pluggable as wrappers around services.
+
+* Use the best transport for the job
+
+- XML
+- JSON
+- JSON-RPC
+- Protocol Buffers
+- Go RPC
+
+Go RPC has pluggable encodings: encoding/gob (binary), encoding/json, custom
+
+* Can add other features to transport wrappers
+
+- Call/request contexts
+- Panic recovery
+- Logging
+- Event hooks
+
+Can structure them as middleware.
+
+* Example: multiple transports
+
+All services provide a secondary JSON-RPC-over-HTTP transport used for:
+
+- Web page requests
+- Curl debugging
+
+Thus marketing-service can serve marketing-service-ui web page requests.
+
+And marketing-service can serve those web pages itself.
+
+So marketing-service-ui isn't needed.
+
+Web pages are just another service client.
+
+* Code generation
+
+RPC code can be generated.
+
+##### Other material of interest
+
+* Other material of interest
+
+- [[https://www.youtube.com/watch?v=xyDkyFjzFVc][GopherCon 2015: Embrace the Interface]]
+- [[https://www.youtube.com/watch?v=1AjaZi4QuGo][GopherCon 2015: Go Kit: A Standard Library for Distributed Programming]]
+
+Go Kit looks promising.
+
+* Nerd Domo wants you to know that he helped
+
+.image nerddomo.jpg _ 400
